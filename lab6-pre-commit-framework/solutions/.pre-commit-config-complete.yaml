@@ -1,0 +1,100 @@
+# Comprehensive pre-commit configuration for Python projects
+default_stages: [commit, push]
+default_language_version:
+  python: python3.8
+
+repos:
+  # Basic file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-yaml
+        args: ['--unsafe']
+      - id: check-toml
+      - id: check-json
+      - id: pretty-format-json
+        args: ['--autofix']
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-docstring-first
+      - id: debug-statements
+      - id: name-tests-test
+        args: ['--django']
+      - id: requirements-txt-fixer
+
+  # Python code formatting
+  - repo: https://github.com/psf/black
+    rev: 22.10.0
+    hooks:
+      - id: black
+        language_version: python3
+        args: [--line-length=88, --target-version=py38]
+
+  # Python import sorting
+  - repo: https://github.com/pycqa/isort
+    rev: 5.10.1
+    hooks:
+      - id: isort
+        args: ["--profile", "black", "--check-only", "--diff"]
+
+  # Python linting
+  - repo: https://github.com/pycqa/flake8
+    rev: 5.0.4
+    hooks:
+      - id: flake8
+        additional_dependencies:
+          - flake8-docstrings
+          - flake8-import-order
+          - flake8-bugbear
+          - flake8-comprehensions
+        args: [--max-line-length=88, --extend-ignore=E203,W503]
+
+  # Python type checking
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v0.991
+    hooks:
+      - id: mypy
+        additional_dependencies: [types-requests, types-PyYAML]
+        args: [--ignore-missing-imports]
+
+  # Security scanning
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.4
+    hooks:
+      - id: bandit
+        args: ['-r', '.', '--format', 'custom']
+        exclude: tests/
+
+  # Documentation
+  - repo: https://github.com/pycqa/pydocstyle
+    rev: 6.1.1
+    hooks:
+      - id: pydocstyle
+        args: [--convention=google]
+
+  # Local custom hooks
+  - repo: local
+    hooks:
+      - id: check-commit-message
+        name: Check commit message format
+        entry: python hooks/check-commit-message.py
+        language: system
+        stages: [commit-msg]
+        pass_filenames: false
+      
+      - id: check-python-version
+        name: Check Python version compatibility
+        entry: python hooks/check-python-version.py
+        language: system
+        files: \.py$
+        
+      - id: no-print-statements
+        name: Check for print statements
+        entry: python hooks/no-print-statements.py
+        language: system
+        files: \.py$
+        exclude: ^(scripts/|tests/)

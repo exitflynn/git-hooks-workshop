@@ -1,0 +1,28 @@
+[post-checkout]
+# Enable virtual environment management per branch
+virtual_env = true
+
+# Automatically install dependencies when switching branches
+auto_install = true
+
+# Python environment manager: venv, conda, pipenv, poetry
+python_manager = venv
+
+# Comma-separated list of requirements files to check
+requirements_files = requirements.txt,dev-requirements.txt
+
+# Enable Node.js dependency installation
+node_install = false
+
+# Enable verbose output
+verbose = true
+
+# Optional: Branch-specific overrides
+[branch:main]
+requirements_files = requirements.txt
+
+[branch:development]
+requirements_files = requirements.txt,dev-requirements.txt,test-requirements.txt
+
+[branch:feature/*]
+requirements_files = requirements.txt,dev-requirements.txt

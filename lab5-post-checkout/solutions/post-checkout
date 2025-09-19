@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""
+Post-checkout hook for automated dependency management.
+
+This hook automatically manages virtual environments and installs dependencies
+when switching branches, based on configuration files in the repository.
+
+Configuration files supported:
+- .post-checkout-config: Main configuration
+- requirements.txt: Python dependencies
+- package.json: Node.js dependencies  
+- Pipfile: Pipenv dependencies
+- pyproject.toml: Poetry/modern Python dependencies
+"""
+
+import os
+import sys
+import subprocess
+import json
+import configparser
+from pathlib import Path
+
+def get_git_root():
+    """Get the root directory of the git repository."""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--show-toplevel'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return Path(result.stdout.strip())
+    except subprocess.CalledProcessError:
+        return None
+
+def load_config(git_root):
+    """Load post-checkout configuration."""
+    config_path = git_root / '.post-checkout-config'
+    config = {
+        'virtual_env': True,
+        'auto_install': True,
+        'python_manager': 'venv',  # venv, conda, pipenv, poetry
+        'requirements_files': ['requirements.txt'],
+        'node_install': False,
+        'verbose': False
+    }
+    
+    if config_path.exists():
+        parser = configparser.ConfigParser()
+        parser.read(config_path)
+        
+        if 'post-checkout' in parser:
+            section = parser['post-checkout']
+            config.update({
+                'virtual_env': section.getboolean('virtual_env', config['virtual_env']),
+                'auto_install': section.getboolean('auto_install', config['auto_install']),
+                'python_manager': section.get('python_manager', config['python_manager']),
+                'requirements_files': section.get('requirements_files', ','.join(config['requirements_files'])).split(','),
+                'node_install': section.getboolean('node_install', config['node_install']),
+                'verbose': section.getboolean('verbose', config['verbose'])
+            })
+    
+    return config
+
+def get_current_branch():
+    """Get the current branch name."""
+    try:
+        result = subprocess.run(
+            ['git', 'branch', '--show-current'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError:
+        return None
+
+def create_venv_name(branch_name):
+    """Create a virtual environment name based on branch."""
+    # Clean branch name for use as directory name
+    clean_name = branch_name.replace('/', '_').replace('-', '_')
+    return f"venv_{clean_name}"
+
+def manage_virtual_environment(git_root, config, branch_name):
+    """Manage virtual environment for the current branch."""
+    if not config['virtual_env']:
+        return True
+    
+    venv_name = create_venv_name(branch_name)
+    venv_path = git_root / '.venvs' / venv_name
+    
+    # Create .venvs directory if it doesn't exist
+    venv_path.parent.mkdir(exist_ok=True)
+    
+    if config['python_manager'] == 'venv':
+        if not venv_path.exists():
+            if config['verbose']:
+                print(f"Creating virtual environment for branch '{branch_name}'...")
+            
+            try:
+                subprocess.run([
+                    sys.executable, '-m', 'venv', str(venv_path)
+                ], check=True)
+                
+                if config['verbose']:
+                    print(f"Virtual environment created at {venv_path}")
+                    
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to create virtual environment: {e}")
+                return False
+        
+        # Activate virtual environment by modifying PATH
+        if sys.platform == "win32":
+            scripts_dir = venv_path / "Scripts"
+        else:
+            scripts_dir = venv_path / "bin"
+            
+        os.environ['PATH'] = f"{scripts_dir}:{os.environ['PATH']}"
+        os.environ['VIRTUAL_ENV'] = str(venv_path)
+        
+        if config['verbose']:
+            print(f"Activated virtual environment: {venv_path}")
+            
+    elif config['python_manager'] == 'conda':
+        # Conda environment management
+        env_name = f"git-{venv_name}"
+        
+        try:
+            # Check if environment exists
+            result = subprocess.run([
+                'conda', 'env', 'list', '--json'
+            ], capture_output=True, text=True, check=True)
+            
+            envs = json.loads(result.stdout)
+            env_exists = any(env_name in env for env in envs['envs'])
+            
+            if not env_exists:
+                if config['verbose']:
+                    print(f"Creating conda environment '{env_name}'...")
+                    
+                subprocess.run([
+                    'conda', 'create', '-n', env_name, 'python', '-y'
+                ], check=True)
+                
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+            print(f"Failed to manage conda environment: {e}")
+            return False
+    
+    return True
+
+def install_python_dependencies(git_root, config):
+    """Install Python dependencies based on configuration."""
+    if not config['auto_install']:
+        return True
+    
+    installed_any = False
+    
+    for req_file in config['requirements_files']:
+        req_path = git_root / req_file.strip()
+        
+        if req_path.exists():
+            if config['verbose']:
+                print(f"Installing dependencies from {req_file}...")
+                
+            try:
+                if config['python_manager'] == 'pipenv' and req_file == 'Pipfile':
+                    subprocess.run(['pipenv', 'install'], cwd=git_root, check=True)
+                elif config['python_manager'] == 'poetry' and req_file == 'pyproject.toml':
+                    subprocess.run(['poetry', 'install'], cwd=git_root, check=True)
+                else:
+                    subprocess.run([
+                        sys.executable, '-m', 'pip', 'install', '-r', req_file
+                    ], cwd=git_root, check=True)
+                    
+                installed_any = True
+                
+                if config['verbose']:
+                    print(f"Successfully installed dependencies from {req_file}")
+                    
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to install dependencies from {req_file}: {e}")
+                return False
+    
+    # Handle pyproject.toml without poetry
+    pyproject_path = git_root / 'pyproject.toml'
+    if pyproject_path.exists() and config['python_manager'] not in ['poetry'] and not installed_any:
+        if config['verbose']:
+            print("Installing package in development mode...")
+            
+        try:
+            subprocess.run([
+                sys.executable, '-m', 'pip', 'install', '-e', '.'
+            ], cwd=git_root, check=True)
+            
+            if config['verbose']:
+                print("Successfully installed package in development mode")
+                
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to install package: {e}")
+            return False
+    
+    return True
+
+def install_node_dependencies(git_root, config):
+    """Install Node.js dependencies if enabled."""
+    if not config['node_install']:
+        return True
+    
+    package_json = git_root / 'package.json'
+    
+    if package_json.exists():
+        if config['verbose']:
+            print("Installing Node.js dependencies...")
+            
+        try:
+            # Prefer yarn if available, fallback to npm
+            yarn_check = subprocess.run(['which', 'yarn'], capture_output=True)
+            if yarn_check.returncode == 0:
+                subprocess.run(['yarn', 'install'], cwd=git_root, check=True)
+            else:
+                subprocess.run(['npm', 'install'], cwd=git_root, check=True)
+                
+            if config['verbose']:
+                print("Successfully installed Node.js dependencies")
+                
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to install Node.js dependencies: {e}")
+            return False
+    
+    return True
+
+def main():
+    """Main post-checkout hook execution."""
+    # Parse hook arguments
+    if len(sys.argv) != 4:
+        print("Error: post-checkout hook requires 3 arguments")
+        sys.exit(1)
+    
+    prev_head = sys.argv[1]
+    new_head = sys.argv[2] 
+    branch_checkout = sys.argv[3]
+    
+    # Only run on branch checkouts, not file checkouts
+    if branch_checkout != '1':
+        sys.exit(0)
+    
+    git_root = get_git_root()
+    if not git_root:
+        print("Error: Not in a git repository")
+        sys.exit(1)
+    
+    current_branch = get_current_branch()
+    if not current_branch:
+        print("Error: Could not determine current branch")
+        sys.exit(1)
+    
+    config = load_config(git_root)
+    
+    if config['verbose']:
+        print(f"Post-checkout hook running for branch: {current_branch}")
+        print(f"Previous HEAD: {prev_head[:8]}")
+        print(f"New HEAD: {new_head[:8]}")
+    
+    # Manage virtual environment
+    if not manage_virtual_environment(git_root, config, current_branch):
+        print("Warning: Failed to set up virtual environment")
+    
+    # Install Python dependencies
+    if not install_python_dependencies(git_root, config):
+        print("Warning: Failed to install Python dependencies")
+    
+    # Install Node.js dependencies
+    if not install_node_dependencies(git_root, config):
+        print("Warning: Failed to install Node.js dependencies")
+    
+    if config['verbose']:
+        print("Post-checkout hook completed successfully")
+
+if __name__ == '__main__':
+    main()
